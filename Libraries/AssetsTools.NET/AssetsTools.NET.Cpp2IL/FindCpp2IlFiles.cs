@@ -11,6 +11,7 @@ namespace AssetsTools.NET.Cpp2IL
             string desktopMetaPath = Path.Combine(fileDir, "il2cpp_data", "Metadata", "global-metadata.dat");
             string windowsAsmPath = Path.Combine(fileDir, "..", "GameAssembly.dll");
             string linuxAsmPath = Path.Combine(fileDir, "..", "GameAssembly.so");
+            string macAsmPath = Path.Combine(fileDir, "..", "..", "Frameworks", "GameAssembly.dylib");
 
             // android
             string androidMetaPath = Path.Combine(fileDir, "Managed", "Metadata", "global-metadata.dat");
@@ -34,6 +35,10 @@ namespace AssetsTools.NET.Cpp2IL
                 else if (File.Exists(linuxAsmPath))
                 {
                     return new FindCpp2IlFilesResult(desktopMetaPath, linuxAsmPath);
+                }
+                else if (File.Exists(macAsmPath))
+                {
+                    return new FindCpp2IlFilesResult(desktopMetaPath, macAsmPath);
                 }
             }
             else if (File.Exists(androidMetaPath))
@@ -70,6 +75,33 @@ namespace AssetsTools.NET.Cpp2IL
                 if (!string.IsNullOrEmpty(actualWasmAsmPath))
                 {
                     return new FindCpp2IlFilesResult(wasmMetaPath, actualWasmAsmPath, actualWasmFwPath ?? string.Empty);
+                }
+            }
+
+            // no standalone global-metadata.dat was found. newer Unity versions can keep the
+            // metadata inside the native IL2CPP binary, so look for it in the binaries instead.
+            string[] embeddedCandidates = new[]
+            {
+                windowsAsmPath,
+                linuxAsmPath,
+                macAsmPath,
+                Path.Combine(fileDir, "..", "UnityPlayer.dll"),
+                androidAsmPathArm64,
+                androidAsmPathArm32,
+                androidAsmPathX8664,
+                androidAsmPathX86,
+                wasmDirectAsmPath
+            };
+
+            foreach (string candidate in embeddedCandidates)
+            {
+                if (File.Exists(candidate) && Il2CppMetadataLocator.FileContainsMetadata(candidate))
+                {
+                    string fwPath = candidate == wasmDirectAsmPath && File.Exists(wasmDirectFwPath)
+                        ? wasmDirectFwPath
+                        : string.Empty;
+
+                    return new FindCpp2IlFilesResult(candidate, candidate, fwPath);
                 }
             }
 

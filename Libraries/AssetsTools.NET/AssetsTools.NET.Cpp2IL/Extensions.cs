@@ -16,11 +16,14 @@ namespace AssetsTools.NET.Cpp2IL
 
         public static Il2CppTypeReflectionData GetEnumUnderlyingType(this Il2CppTypeDefinition self)
         {
-            for (int i = 0; i < self.Fields.Length; i++)
+            // Fields and FieldAttributes build a new array every time they are read, so only read them once
+            Il2CppFieldDefinition[] fields = self.Fields;
+            FieldAttributes[] fieldAttributes = self.FieldAttributes;
+            for (int i = 0; i < fields.Length; i++)
             {
-                if (!self.FieldAttributes[i].HasFlag(FieldAttributes.Static))
+                if (!fieldAttributes[i].HasFlag(FieldAttributes.Static))
                 {
-                    return self.Fields[i].FieldType;
+                    return fields[i].FieldType;
                 }
             }
 

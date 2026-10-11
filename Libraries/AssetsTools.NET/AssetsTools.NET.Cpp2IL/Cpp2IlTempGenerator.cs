@@ -19,19 +19,32 @@ namespace AssetsTools.NET.Cpp2IL
         private readonly byte[] _assemblyBytes;
         private ATUnityVersion _unityVersion;
         private bool _initialized;
+        private LibCpp2IlContext _context;
         private bool _anyFieldIsManagedReference;
+        private readonly Dictionary<string, Dictionary<string, Il2CppTypeDefinition>> _typesByAssembly =
+            new Dictionary<string, Dictionary<string, Il2CppTypeDefinition>>();
 
         public Cpp2IlTempGenerator(string globalMetadataPath, string assemblyPath)
         {
-            _globalMetadataBytes = File.ReadAllBytes(globalMetadataPath);
-            _assemblyBytes = File.ReadAllBytes(assemblyPath);
+            byte[] assemblyBytes = File.ReadAllBytes(assemblyPath);
+
+            // newer Unity versions can keep the metadata inside the native binary, in which
+            // case both paths point to the same file. only read it once.
+            bool samePath = string.Equals(
+                Path.GetFullPath(globalMetadataPath),
+                Path.GetFullPath(assemblyPath),
+                StringComparison.OrdinalIgnoreCase);
+            byte[] metadataBytes = samePath ? assemblyBytes : File.ReadAllBytes(globalMetadataPath);
+
+            _assemblyBytes = assemblyBytes;
+            _globalMetadataBytes = Il2CppMetadataLocator.ExtractMetadata(metadataBytes, assemblyBytes);
             ResetCpp2IL();
         }
 
         public Cpp2IlTempGenerator(byte[] globalMetadataBytes, byte[] assemblyBytes)
         {
-            _globalMetadataBytes = globalMetadataBytes;
             _assemblyBytes = assemblyBytes;
+            _globalMetadataBytes = Il2CppMetadataLocator.ExtractMetadata(globalMetadataBytes, assemblyBytes);
             ResetCpp2IL();
         }
 
@@ -42,38 +55,45 @@ namespace AssetsTools.NET.Cpp2IL
 
         public void ResetCpp2IL()
         {
-            LibCpp2IlMain.Reset();
+            _context = null;
+            _typesByAssembly.Clear();
             _unityVersion = null;
             _initialized = false;
         }
 
         public void SetUnityVersion(ATUnityVersion unityVersion)
         {
-            LibCpp2IlMain.Reset();
+            _context = null;
             _unityVersion = unityVersion;
             _initialized = false;
         }
 
         public void SetUnityVersion(ARUnityVersion unityVersion)
         {
-            LibCpp2IlMain.Reset();
+            _context = null;
             _unityVersion = new ATUnityVersion(unityVersion.ToString());
             _initialized = false;
         }
 
         public void SetUnityVersion(int major, int minor, int patch)
         {
-            LibCpp2IlMain.Reset();
+            _context = null;
             _unityVersion = new ATUnityVersion(major + "." + minor + "." + patch);
             _initialized = false;
         }
 
         public void InitializeCpp2IL()
         {
+            _typesByAssembly.Clear();
             ARUnityVersion arUnityVersion = ARUnityVersion.Parse(_unityVersion.ToString());
-            if (!LibCpp2IlMain.Initialize(_assemblyBytes, _globalMetadataBytes, arUnityVersion))
+            try
             {
-                throw new Exception("Cpp2Il initialization failed");
+                _context = LibCpp2IlMain.InitializeAsContext(_assemblyBytes, _globalMetadataBytes, arUnityVersion);
+            }
+            catch (Exception ex)
+            {
+                _context = null;
+                throw new Exception($"Cpp2Il initialization failed: {ex.Message}", ex);
             }
             _initialized = true;
         }
@@ -93,9 +113,9 @@ namespace AssetsTools.NET.Cpp2IL
 
             _anyFieldIsManagedReference = false;
 
-            Il2CppMetadata meta = LibCpp2IlMain.TheMetadata;
+            Il2CppMetadata meta = _context.Metadata;
 
-            Il2CppAssemblyDefinition asm = meta.AssemblyDefinitions.ToList().First(a => a.AssemblyName.Name == assemblyName);
+            Il2CppAssemblyDefinition asm = meta.AssemblyDefinitions.FirstOrDefault(a => a.AssemblyName.Name == assemblyName);
             if (asm == null)
             {
                 throw new Exception($"Assembly \"{assemblyName}\" was not found in the IL2CPP metadata.");
@@ -103,12 +123,13 @@ namespace AssetsTools.NET.Cpp2IL
 
             string fullName = $"{nameSpace}{(string.IsNullOrEmpty(nameSpace) ? "" : ".")}{className}";
 
-            Il2CppTypeDefinition type = asm.Image.Types.FirstOrDefault(t => t.FullName == fullName);
+            Il2CppTypeDefinition type = FindType(asm, assemblyName, fullName);
             if (type == null)
             {
                 throw new Exception($"Type \"{nameSpace}::{className}\" was not found in the IL2CPP metadata.");
             }
-            Il2CppTypeReflectionData typeRef = new Il2CppTypeReflectionData
+            // newer LibCpp2IL needs to know which loaded application the type belongs to
+            Il2CppTypeReflectionData typeRef = new Il2CppTypeReflectionData(_context)
             {
                 baseType = type,
                 genericParams = Array.Empty<Il2CppTypeReflectionData>(),
@@ -128,6 +149,27 @@ namespace AssetsTools.NET.Cpp2IL
             newBaseField.Children.AddRange(templateFields);
 
             return newBaseField;
+        }
+
+        private Il2CppTypeDefinition FindType(Il2CppAssemblyDefinition asm, string assemblyName, string fullName)
+        {
+            // computing a type's full name allocates strings, so index each assembly's types by name once
+            if (!_typesByAssembly.TryGetValue(assemblyName, out Dictionary<string, Il2CppTypeDefinition> types))
+            {
+                types = new Dictionary<string, Il2CppTypeDefinition>();
+                foreach (Il2CppTypeDefinition candidate in asm.Image.Types)
+                {
+                    string candidateName = candidate.FullName;
+                    if (candidateName != null && !types.ContainsKey(candidateName))
+                    {
+                        types[candidateName] = candidate;
+                    }
+                }
+                _typesByAssembly[assemblyName] = types;
+            }
+
+            types.TryGetValue(fullName, out Il2CppTypeDefinition result);
+            return result;
         }
 
         public byte[] LoadNewCustomAttributeData(Il2CppImageDefinition image, Il2CppMetadata metadata, Il2CppFieldDefinition field)
@@ -160,12 +202,31 @@ namespace AssetsTools.NET.Cpp2IL
             return metadata.ReadByteArrayAtRawAddress(blobStart, (int)(blobEnd - blobStart));
         }
 
+        private static Il2CppMethodDefinition ResolveAttributeConstructor(Il2CppMetadata metadata, uint rawIndex)
+        {
+            if (metadata.MetadataVersion >= 104f)
+            {
+                // metadata v104+ (Unity 6) no longer stores a plain index into the method table here.
+                // the value is an encoded metadata usage (type bits + index), same as in the binary.
+                MetadataUsage usage = MetadataUsage.DecodeMetadataUsage(rawIndex, 0, metadata.OwningContext);
+                if (usage == null || usage.Type != MetadataUsageType.MethodDef)
+                    return null;
+
+                return usage.AsMethod();
+            }
+
+            if (rawIndex >= metadata.methodDefs.Length)
+                return null;
+
+            return metadata.methodDefs[rawIndex];
+        }
+
         private List<string> GetAttributeNamesOnField(Il2CppImageDefinition image, Il2CppFieldDefinition field)
         {
             List<string> attributeNames = new List<string>();
 
-            Il2CppMetadata metadata = LibCpp2IlMain.TheMetadata;
-            if (LibCpp2IlMain.MetadataVersion >= 29f)
+            Il2CppMetadata metadata = _context.Metadata;
+            if (metadata.MetadataVersion >= 29f)
             {
                 // new version
                 byte[] rawAttrData = LoadNewCustomAttributeData(image, metadata, field);
@@ -178,7 +239,9 @@ namespace AssetsTools.NET.Cpp2IL
                 ParsedCustomAttrData parsedCustomAttrData = new ParsedCustomAttrData(rawAttrData);
                 foreach (uint attrIdx in parsedCustomAttrData.attributeIndices)
                 {
-                    var attrCtorMethod = metadata.methodDefs[attrIdx];
+                    Il2CppMethodDefinition attrCtorMethod = ResolveAttributeConstructor(metadata, attrIdx);
+                    if (attrCtorMethod == null)
+                        continue;
 
                     var attrCtorMethodTypeIdx = attrCtorMethod.declaringTypeIdx;
                     if (attrCtorMethodTypeIdx.IsNull)
@@ -358,10 +421,13 @@ namespace AssetsTools.NET.Cpp2IL
         private List<Il2CppFieldDefinition> GetAcceptableFields(TypeDefWithSelfRef parentType, int availableDepth)
         {
             List<Il2CppFieldDefinition> validFields = new List<Il2CppFieldDefinition>();
+            // Fields and FieldAttributes build a new array every time they are read, so only read them once
+            Il2CppFieldDefinition[] typeFields = parentType.typeDef.Fields;
+            FieldAttributes[] typeFieldAttributes = parentType.typeDef.FieldAttributes;
             for (int i = 0; i < parentType.typeDef.FieldCount; i++)
             {
-                Il2CppFieldDefinition f = parentType.typeDef.Fields[i];
-                FieldAttributes attr = parentType.typeDef.FieldAttributes[i];
+                Il2CppFieldDefinition f = typeFields[i];
+                FieldAttributes attr = typeFieldAttributes[i];
 
                 List<string> attributeNames = GetAttributeNamesOnField(parentType.typeDef.DeclaringAssembly, f);
 

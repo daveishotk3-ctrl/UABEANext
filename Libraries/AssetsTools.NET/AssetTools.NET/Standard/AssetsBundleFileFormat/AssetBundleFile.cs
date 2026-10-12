@@ -618,6 +618,10 @@ namespace AssetsTools.NET
             if (Header == null)
                 throw new Exception("Header must be loaded! (Did you forget to call bundle.Read?)");
 
+            // newer Unity versions can encrypt the bundle with a key that only the game knows
+            if ((Header.FileStreamHeader.Flags & AssetBundleFSHeaderFlags.UsesAssetBundleEncryption) != 0)
+                throw new NotSupportedException("This bundle is encrypted (the AssetBundle encryption flag is set), so it can't be read without the game's key.");
+
             MemoryStream blocksInfoStream;
             AssetsFileReader memReader;
 

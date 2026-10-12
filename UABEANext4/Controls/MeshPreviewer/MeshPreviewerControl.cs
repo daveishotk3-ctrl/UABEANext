@@ -74,7 +74,7 @@ public class MeshPreviewerControl : OpenGlControlBase, ICustomHitTest
         new Vertex { Position = new Vector3(-1.0f, 1.0f, -1.0f), Normal = new Vector3(1.0f, 1.0f, 1.0f) },
     ];
 
-    private ushort[] _indices =
+    private uint[] _indices =
     [
         // face 1
         0, 1, 2,
@@ -107,22 +107,33 @@ public class MeshPreviewerControl : OpenGlControlBase, ICustomHitTest
         if (gl == null)
             return;
 
-        var vertexCount = gl.Vertices.Length / 3;
+        // positions and normals are usually 3 numbers per vertex, but some formats pad them to 4
+        var vertexCount = gl.VertexCount > 0 ? gl.VertexCount : gl.Vertices.Length / 3;
+        var positionStride = vertexCount > 0 ? gl.Vertices.Length / vertexCount : 0;
+        var normalStride = vertexCount > 0 ? gl.Normals.Length / vertexCount : 0;
+        if (positionStride < 3)
+        {
+            vertexCount = 0;
+        }
+
         _points = new Vertex[vertexCount];
 
-        _indices = gl.Indices;
+        // 32 bit indices and submesh base vertices are handled by the mesh
+        _indices = vertexCount > 0 ? gl.GetTriangleIndices() : Array.Empty<uint>();
 
-        if (vertexCount > 0)
+        for (var i = 0; i < vertexCount; i++)
         {
-            var skip = gl.Normals.Length / vertexCount;
-            for (var i = 0; i < vertexCount; i++)
+            _points[i] = new Vertex
             {
-                _points[i] = new Vertex
-                {
-                    Position = new Vector3(gl.Vertices[i * 3], gl.Vertices[i * 3 + 1], gl.Vertices[i * 3 + 2]),
-                    Normal = new Vector3(-gl.Normals[i * skip], gl.Normals[i * skip + 1], gl.Normals[i * skip + 2])
-                };
-            }
+                Position = new Vector3(
+                    gl.Vertices[i * positionStride],
+                    gl.Vertices[i * positionStride + 1],
+                    gl.Vertices[i * positionStride + 2]),
+                // meshes without normals get a plain upward normal instead of crashing
+                Normal = normalStride >= 3
+                    ? new Vector3(-gl.Normals[i * normalStride], gl.Normals[i * normalStride + 1], gl.Normals[i * normalStride + 2])
+                    : new Vector3(0f, 1f, 0f)
+            };
         }
 
         _dirtyModel = true;
@@ -261,7 +272,7 @@ public class MeshPreviewerControl : OpenGlControlBase, ICustomHitTest
         gl.BindBuffer(GLEnum.ElementArrayBuffer, _indexBufferObject);
         fixed (void* pdata = _indices)
         {
-            gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(_indices.Length * sizeof(ushort)), pdata, BufferUsageARB.StaticDraw);
+            gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(_indices.Length * sizeof(uint)), pdata, BufferUsageARB.StaticDraw);
         }
         CheckError(3);
 
@@ -319,7 +330,7 @@ public class MeshPreviewerControl : OpenGlControlBase, ICustomHitTest
         gl.Uniform3(directionalLightDirLoc, -1.0f, -1.0f, -0.7f);
         gl.Uniform3(directionalLightColorLoc, 1.0f, 1.0f, 1.0f);
         CheckError(11);
-        gl.DrawElements(PrimitiveType.Triangles, (uint)_indices.Length, DrawElementsType.UnsignedShort, (void*)0);
+        gl.DrawElements(PrimitiveType.Triangles, (uint)_indices.Length, DrawElementsType.UnsignedInt, (void*)0);
         CheckError(12);
 
         RequestNextFrameRendering();

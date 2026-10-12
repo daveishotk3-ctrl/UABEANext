@@ -39,6 +39,7 @@
                 <MenuItem Header="Hierarchy" ToggleType="CheckBox" IsChecked="{Binding DockHierarchyVisible, Mode=TwoWay}" />
                 <MenuItem Header="Inspector" ToggleType="CheckBox" IsChecked="{Binding DockInspectorVisible, Mode=TwoWay}" />
                 <MenuItem Header="Previewer" ToggleType="CheckBox" IsChecked="{Binding DockPreviewerVisible, Mode=TwoWay}" />
+                <MenuItem Header="Project View" ToggleType="CheckBox" IsChecked="{Binding DockProjectViewVisible, Mode=TwoWay}" />
             </MenuItem>
             <MenuItem Header="Tools">
                 <MenuItem Header="Asset Info" Command="{Binding ShowAssetInfoDialog}" IsEnabled="{Binding Workspace.RootItems.Count}" />

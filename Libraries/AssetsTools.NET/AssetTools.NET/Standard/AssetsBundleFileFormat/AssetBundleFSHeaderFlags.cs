@@ -10,6 +10,7 @@
         HasDirectoryInfo = 0x40,
         BlockAndDirAtEnd = 0x80,
         OldWebPluginCompatibility = 0x100,
-        BlockInfoNeedPaddingAtStart = 0x200
+        BlockInfoNeedPaddingAtStart = 0x200,
+        UsesAssetBundleEncryption = 0x400
     }
 }

@@ -1,0 +1,29 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:tools="using:UABEANext4.ViewModels.Tools"
+             xmlns:scene="using:UABEANext4.Controls.SceneViewer"
+             mc:Ignorable="d" d:DesignWidth="500" d:DesignHeight="400"
+             x:Class="UABEANext4.Views.Tools.ProjectViewToolView"
+             x:DataType="tools:ProjectViewToolViewModel">
+    <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="4">
+        <WrapPanel Grid.Row="0" Orientation="Horizontal">
+            <Button Content="Build from selection" Command="{Binding BuildFromSelectionCommand}" Margin="0,0,4,4" />
+            <Button Content="Build from all files" Command="{Binding BuildFromAllFilesCommand}" Margin="0,0,4,4" />
+            <Button Content="Cancel" Command="{Binding CancelBuildCommand}" IsEnabled="{Binding IsBuilding}" Margin="0,0,4,4" />
+            <Button Content="Frame all" Click="FrameAllButton_Click" Margin="0,0,4,4" />
+            <CheckBox Content="Show inactive objects" IsChecked="{Binding ShowInactive}" Margin="0,0,4,4" />
+        </WrapPanel>
+        <ProgressBar Grid.Row="1" Minimum="0" Maximum="1" Value="{Binding ProgressValue}" IsVisible="{Binding IsBuilding}" Margin="0,0,0,4" />
+        <Border Grid.Row="2" BorderThickness="1" BorderBrush="Gray">
+            <scene:SceneViewerControl
+                x:Name="Viewport"
+                Scene="{Binding Scene}"
+                ShowInactive="{Binding ShowInactive}"
+                ToolTip.Tip="Left drag: orbit. Right drag or Shift + left drag: pan. Wheel: zoom. W/A/S/D/Q/E: move. F: frame everything." />
+        </Border>
+        <TextBlock Grid.Row="3" Text="{Binding StatusText}" TextWrapping="Wrap" Margin="0,4,0,0"
+                   ToolTip.Tip="{Binding WarningsText}" />
+    </Grid>
+</UserControl>

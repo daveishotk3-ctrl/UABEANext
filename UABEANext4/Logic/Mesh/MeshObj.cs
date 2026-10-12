@@ -19,6 +19,28 @@ public class MeshObj
     public float[] Colors;
     public float[][] UVs;
 
+    /// <summary>
+    /// Number of vertices in the vertex buffer (m_VertexData.m_VertexCount).
+    /// </summary>
+    public int VertexCount;
+    /// <summary>
+    /// The whole index buffer widened to 32 bits, regardless of whether the mesh stores 16 or 32 bit indices.
+    /// Indices of all submeshes are in here, back to back. Use <see cref="GetTriangleIndices"/> for drawable triangles.
+    /// </summary>
+    public uint[] IndexBuffer;
+    public List<SubMeshInfo> SubMeshes;
+
+    // size of one index in the original data (2 or 4), used to turn a submesh's firstByte into an index
+    private int _bytesPerIndex = 2;
+
+    public class SubMeshInfo
+    {
+        public uint FirstByte;
+        public uint IndexCount;
+        public int Topology;
+        public uint BaseVertex;
+    }
+
     public MeshObj()
     {
         Indices = [];
@@ -28,6 +50,8 @@ public class MeshObj
         Tangents = [];
         Colors = [];
         UVs = [];
+        IndexBuffer = [];
+        SubMeshes = [];
     }
 
     public MeshObj(AssetsFileInstance fileInst, AssetTypeValueField baseField, UnityVersion version)
@@ -39,6 +63,8 @@ public class MeshObj
         Tangents = [];
         Colors = [];
         UVs = [];
+        IndexBuffer = [];
+        SubMeshes = [];
 
         Read(fileInst, baseField, version);
     }
@@ -46,6 +72,7 @@ public class MeshObj
     private void Read(AssetsFileInstance fileInst, AssetTypeValueField baseField, UnityVersion version)
     {
         ReadIndicesData(baseField);
+        ReadSubMeshes(baseField);
         ReadChannels(baseField);
         ReadVertexData(fileInst, baseField, version);
     }
@@ -54,12 +81,153 @@ public class MeshObj
     {
         var indicesField = baseField["m_IndexBuffer.Array"].AsByteArray;
         var ushortArray = new ushort[indicesField.Length / 2];
-        for (var i = 0; i < indicesField.Length; i += 2)
+        for (var i = 0; i + 1 < indicesField.Length; i += 2)
         {
             ushortArray[i / 2] = (ushort)(indicesField[i + 1] << 8 | indicesField[i]);
         }
         Indices = ushortArray;
+
+        // meshes with more than 65535 vertices store 32 bit indices. Unity 2017.3+ has m_IndexFormat
+        // (0 = 16 bit, 1 = 32 bit). older versions have m_Use16BitIndices (nonzero = 16 bit).
+        var is32Bit = false;
+        var indexFormatField = baseField["m_IndexFormat"];
+        if (!indexFormatField.IsDummy)
+        {
+            is32Bit = indexFormatField.AsInt == 1;
+        }
+        else
+        {
+            var use16BitField = baseField["m_Use16BitIndices"];
+            if (!use16BitField.IsDummy)
+                is32Bit = use16BitField.AsInt == 0;
+        }
+
+        _bytesPerIndex = is32Bit ? 4 : 2;
+        if (is32Bit)
+        {
+            var uintArray = new uint[indicesField.Length / 4];
+            for (var i = 0; i + 3 < indicesField.Length; i += 4)
+            {
+                uintArray[i / 4] = (uint)(indicesField[i] | indicesField[i + 1] << 8 | indicesField[i + 2] << 16 | indicesField[i + 3] << 24);
+            }
+            IndexBuffer = uintArray;
+        }
+        else
+        {
+            var uintArray = new uint[ushortArray.Length];
+            for (var i = 0; i < ushortArray.Length; i++)
+            {
+                uintArray[i] = ushortArray[i];
+            }
+            IndexBuffer = uintArray;
+        }
     }
+
+    private void ReadSubMeshes(AssetTypeValueField baseField)
+    {
+        var subMeshes = new List<SubMeshInfo>();
+        var subMeshArray = baseField["m_SubMeshes.Array"];
+        if (!subMeshArray.IsDummy)
+        {
+            foreach (var subMeshField in subMeshArray)
+            {
+                var firstByteField = subMeshField["firstByte"];
+                var indexCountField = subMeshField["indexCount"];
+                var topologyField = subMeshField["topology"];
+                var baseVertexField = subMeshField["baseVertex"];
+
+                subMeshes.Add(new SubMeshInfo
+                {
+                    FirstByte = firstByteField.IsDummy ? 0 : firstByteField.AsUInt,
+                    IndexCount = indexCountField.IsDummy ? 0 : indexCountField.AsUInt,
+                    Topology = topologyField.IsDummy ? 0 : topologyField.AsInt,
+                    BaseVertex = baseVertexField.IsDummy ? 0 : baseVertexField.AsUInt
+                });
+            }
+        }
+        SubMeshes = subMeshes;
+    }
+
+    /// <summary>
+    /// Builds the list of triangles to draw as a flat list of 32 bit indices into the vertex arrays.
+    /// This walks each submesh, adds its base vertex, expands quads and triangle strips, skips lines and
+    /// points, and drops any triangle that points outside the vertex buffer.
+    /// If the mesh has no submesh info, the raw index buffer is used as a plain triangle list.
+    /// </summary>
+    public uint[] GetTriangleIndices()
+    {
+        var result = new List<uint>(IndexBuffer.Length);
+        var vertexCount = (uint)Math.Max(VertexCount, 0);
+
+        void AddTriangle(uint a, uint b, uint c)
+        {
+            if (a < vertexCount && b < vertexCount && c < vertexCount)
+            {
+                result.Add(a);
+                result.Add(b);
+                result.Add(c);
+            }
+        }
+
+        if (SubMeshes.Count == 0)
+        {
+            for (var i = 0; i + 2 < IndexBuffer.Length; i += 3)
+            {
+                AddTriangle(IndexBuffer[i], IndexBuffer[i + 1], IndexBuffer[i + 2]);
+            }
+            return result.ToArray();
+        }
+
+        // submeshes record firstByte, but IndexBuffer is widened to 32 bit, so convert to an element index
+        foreach (var subMesh in SubMeshes)
+        {
+            var start = (long)(subMesh.FirstByte / _bytesPerIndex);
+            var count = (long)subMesh.IndexCount;
+            if (start < 0 || start >= IndexBuffer.Length)
+                continue;
+            if (start + count > IndexBuffer.Length)
+                count = IndexBuffer.Length - start;
+
+            var baseVertex = subMesh.BaseVertex;
+            uint Idx(long i) => IndexBuffer[start + i] + baseVertex;
+
+            switch (subMesh.Topology)
+            {
+                case 0: // triangles
+                {
+                    for (long i = 0; i + 2 < count; i += 3)
+                    {
+                        AddTriangle(Idx(i), Idx(i + 1), Idx(i + 2));
+                    }
+                    break;
+                }
+                case 1: // triangle strip (deprecated)
+                {
+                    for (long i = 0; i + 2 < count; i++)
+                    {
+                        if ((i & 1) == 0)
+                            AddTriangle(Idx(i), Idx(i + 1), Idx(i + 2));
+                        else
+                            AddTriangle(Idx(i + 1), Idx(i), Idx(i + 2));
+                    }
+                    break;
+                }
+                case 2: // quads
+                {
+                    for (long i = 0; i + 3 < count; i += 4)
+                    {
+                        AddTriangle(Idx(i), Idx(i + 1), Idx(i + 2));
+                        AddTriangle(Idx(i), Idx(i + 2), Idx(i + 3));
+                    }
+                    break;
+                }
+                // lines, line strips and points can't be shown as solid surfaces
+            }
+        }
+
+        return result.ToArray();
+    }
+
 
     private void ReadChannels(AssetTypeValueField baseField)
     {
@@ -269,6 +437,7 @@ public class MeshObj
     private void ReadVertexData(AssetsFileInstance fileInst, AssetTypeValueField baseField, UnityVersion version)
     {
         var vertexCount = baseField["m_VertexData"]["m_VertexCount"].AsInt;
+        VertexCount = vertexCount;
         var vertexData = GetVertexData(fileInst, baseField);
         var streamLengths = GetStreamLengths(version);
         var startPos = 0;

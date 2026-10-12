@@ -43,6 +43,8 @@ public partial class MainViewModel : ViewModelBase
     public bool _dockInspectorVisible = true;
     [ObservableProperty]
     public bool _dockPreviewerVisible = true;
+    [ObservableProperty]
+    public bool _dockProjectViewVisible = true;
 
     public Workspace Workspace { get; }
 
@@ -94,6 +96,7 @@ public partial class MainViewModel : ViewModelBase
             case "Hierarchy": DockHierarchyVisible = true; break;
             case "Inspector": DockInspectorVisible = true; break;
             case "Previewer": DockPreviewerVisible = true; break;
+            case "ProjectView": DockProjectViewVisible = true; break;
         }
     }
 
@@ -108,6 +111,7 @@ public partial class MainViewModel : ViewModelBase
             case "Hierarchy": DockHierarchyVisible = false; break;
             case "Inspector": DockInspectorVisible = false; break;
             case "Previewer": DockPreviewerVisible = false; break;
+            case "ProjectView": DockProjectViewVisible = false; break;
         }
 
         if (e.Dockable is Document document && _factory.DocMan.LastFocusedDocument == document)
@@ -154,6 +158,15 @@ public partial class MainViewModel : ViewModelBase
             return;
 
         ShowHideDockable(previewer, value);
+    }
+
+    partial void OnDockProjectViewVisibleChanged(bool value)
+    {
+        var projectView = _factory.GetDockable<ProjectViewToolViewModel>("ProjectView");
+        if (projectView is null || Layout is null)
+            return;
+
+        ShowHideDockable(projectView, value);
     }
 
     private void ShowHideDockable(IDockable dockable, bool show)
